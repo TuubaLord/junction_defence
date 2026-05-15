@@ -141,37 +141,38 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             }
         }
     } else if (base->type == BLUE_PING || base->type == RED_PING) {
-        DataMsg* msg = (DataMsg*)incomingData;
+        DataMsg msg;
+        memcpy(&msg, incomingData, sizeof(DataMsg)); // MUST copy out of const driver buffer!
         
         // 1. Check if we are designated next hop
-        if (memcmp(msg->next_hop, myMac, 6) != 0) return; // Discard!
+        if (memcmp(msg.next_hop, myMac, 6) != 0) return; // Discard!
         
         // 2. Check visited to prevent loops
-        for(int i=0; i<msg->visited_count; i++) {
-            if (memcmp(msg->visited[i], myMac, 6) == 0) return;
+        for(int i=0; i<msg.visited_count; i++) {
+            if (memcmp(msg.visited[i], myMac, 6) == 0) return;
         }
         
         // Add ourselves to visited
-        if (msg->visited_count < 10) {
-            memcpy(msg->visited[msg->visited_count], myMac, 6);
-            msg->visited_count++;
+        if (msg.visited_count < 10) {
+            memcpy(msg.visited[msg.visited_count], myMac, 6);
+            msg.visited_count++;
         }
         
-        uint64_t targetU64 = macToU64(msg->target);
+        uint64_t targetU64 = macToU64(msg.target);
         
         if (targetU64 == macToU64(myMac)) {
             // Reached destination!
-            if (msg->type == BLUE_PING) {
+            if (msg.type == BLUE_PING) {
                 Serial.printf("\n[RCV] ");
-                printMac(msg->visited[0]);
-                Serial.printf(" says: %s\n", msg->payload);
+                printMac(msg.visited[0]);
+                Serial.printf(" says: %s\n", msg.payload);
                 
                 // Send RED_PING ack back to originator
-                if (msg->visited_count > 0) {
+                if (msg.visited_count > 0) {
                     DataMsg ack;
                     ack.type = RED_PING;
-                    ack.msg_id = msg->msg_id;
-                    memcpy(ack.target, msg->visited[0], 6); // originator
+                    ack.msg_id = msg.msg_id;
+                    memcpy(ack.target, msg.visited[0], 6); // originator
                     uint64_t origU64 = macToU64(ack.target);
                     if (routing_table.find(origU64) != routing_table.end()) {
                         memcpy(ack.next_hop, routing_table[origU64].next_hop, 6);
@@ -181,16 +182,16 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                     }
                 }
             } else {
-                Serial.printf("\n[ACK] Message %u successfully delivered!\n", msg->msg_id);
+                Serial.printf("\n[ACK] Message %u successfully delivered!\n", msg.msg_id);
             }
         } else {
             // Relay!
             if (routing_table.find(targetU64) != routing_table.end()) {
-                memcpy(msg->next_hop, routing_table[targetU64].next_hop, 6);
-                esp_now_send(broadcastAddress, (uint8_t*)msg, sizeof(DataMsg));
-                Serial.printf("\n[RELAY] Forwarding msg %u to next hop.\n", msg->msg_id);
+                memcpy(msg.next_hop, routing_table[targetU64].next_hop, 6);
+                esp_now_send(broadcastAddress, (uint8_t*)&msg, sizeof(DataMsg));
+                Serial.printf("\n[RELAY] Forwarding msg %u to next hop.\n", msg.msg_id);
             } else {
-                Serial.printf("\n[DROP] Dead end reached for msg %u.\n", msg->msg_id);
+                Serial.printf("\n[DROP] Dead end reached for msg %u.\n", msg.msg_id);
             }
         }
     }
