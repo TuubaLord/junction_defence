@@ -3,6 +3,35 @@
 #include <esp_now.h>
 #include <map>
 
+// --- Thread-Safe Queue for Relaying ---
+#define MSG_QUEUE_SIZE 10
+DataMsg relay_queue[MSG_QUEUE_SIZE];
+volatile int queue_head = 0;
+volatile int queue_tail = 0;
+portMUX_TYPE queueMutex = portMUX_INITIALIZER_UNLOCKED;
+
+void enqueueMsg(const DataMsg& m) {
+    portENTER_CRITICAL(&queueMutex);
+    int next = (queue_head + 1) % MSG_QUEUE_SIZE;
+    if (next != queue_tail) { // If not full
+        memcpy(&relay_queue[queue_head], &m, sizeof(DataMsg));
+        queue_head = next;
+    }
+    portEXIT_CRITICAL(&queueMutex);
+}
+
+bool dequeueMsg(DataMsg& m) {
+    bool has_msg = false;
+    portENTER_CRITICAL(&queueMutex);
+    if (queue_head != queue_tail) {
+        memcpy(&m, &relay_queue[queue_tail], sizeof(DataMsg));
+        queue_tail = (queue_tail + 1) % MSG_QUEUE_SIZE;
+        has_msg = true;
+    }
+    portEXIT_CRITICAL(&queueMutex);
+    return has_msg;
+}
+
 // --- Configuration ---
 const unsigned long ROUTING_BCAST_INTERVAL = 2000; // ms
 
@@ -178,7 +207,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                         memcpy(ack.next_hop, routing_table[origU64].next_hop, 6);
                         ack.visited_count = 1;
                         memcpy(ack.visited[0], myMac, 6);
-                        esp_now_send(broadcastAddress, (uint8_t*)&ack, sizeof(DataMsg));
+                        enqueueMsg(ack);
                     }
                 }
             } else {
@@ -188,8 +217,8 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             // Relay!
             if (routing_table.find(targetU64) != routing_table.end()) {
                 memcpy(msg.next_hop, routing_table[targetU64].next_hop, 6);
-                esp_now_send(broadcastAddress, (uint8_t*)&msg, sizeof(DataMsg));
-                Serial.printf("\n[RELAY] Forwarding msg %u to next hop.\n", msg.msg_id);
+                enqueueMsg(msg);
+                Serial.printf("\n[RELAY] Queued msg %u for next hop.\n", msg.msg_id);
             } else {
                 Serial.printf("\n[DROP] Dead end reached for msg %u.\n", msg.msg_id);
             }
@@ -291,5 +320,12 @@ void loop() {
               Serial.println("[ERR] Invalid SEND format. Use: SEND AA:BB:CC:DD:EE:FF Hello World");
           }
       }
+  }
+  
+  // 3. Process queued transmissions safely in the main loop
+  DataMsg queuedMsg;
+  if (dequeueMsg(queuedMsg)) {
+      esp_now_send(broadcastAddress, (uint8_t*)&queuedMsg, sizeof(DataMsg));
+      delay(5); // Give WiFi hardware a tiny bit of breathing room
   }
 }
