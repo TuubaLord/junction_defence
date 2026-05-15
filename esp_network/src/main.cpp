@@ -231,6 +231,16 @@ void loop() {
   if (millis() - last_routing_bcast > ROUTING_BCAST_INTERVAL) {
       last_routing_bcast = millis();
       broadcastRoutingTable();
+      
+      Serial.println("[ROUTE_START]");
+      for (auto it = routing_table.begin(); it != routing_table.end(); ++it) {
+          if (it->second.hops > 0) {
+              uint8_t m[6];
+              u64ToMac(it->first, m);
+              Serial.printf("[ROUTE] %02X:%02X:%02X:%02X:%02X:%02X %d\n", m[0], m[1], m[2], m[3], m[4], m[5], it->second.hops);
+          }
+      }
+      Serial.println("[ROUTE_END]");
   }
   
   // 2. Handle Serial Input

@@ -6,17 +6,51 @@ import time
 
 def print_help():
     print("\n--- Mesh Chat Commands ---")
+    print("  /routes         - View current network topology")
     print("  /target <MAC>   - Set the destination MAC address")
     print("  /quit           - Exit the chat client")
     print("  <any text>      - Send text to the current target MAC")
     print("--------------------------\n")
 
+last_routes_str = ""
+current_routes = []
+
 def read_from_port(ser):
+    global last_routes_str, current_routes
+    in_route_block = False
+    
     while True:
         try:
             if ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line:
+                    continue
+                    
+                # Handle routing table sync block
+                if line == "[ROUTE_START]":
+                    in_route_block = True
+                    current_routes = []
+                    continue
+                elif line == "[ROUTE_END]":
+                    in_route_block = False
+                    # Format route summary
+                    if current_routes:
+                        r_str = ", ".join([f"{mac} ({hops} hops)" for mac, hops in current_routes])
+                    else:
+                        r_str = "No active nodes found."
+                        
+                    # Only alert if topology changed
+                    if r_str != last_routes_str:
+                        last_routes_str = r_str
+                        sys.stdout.write("\r\033[K")
+                        print(f"\033[95m[NET] Topology Change! Active Nodes: {r_str}\033[0m")
+                        sys.stdout.write("\033[96m> \033[0m")
+                        sys.stdout.flush()
+                    continue
+                elif line.startswith("[ROUTE] "):
+                    parts = line.split()
+                    if len(parts) == 3:
+                        current_routes.append((parts[1], parts[2]))
                     continue
                     
                 # Filter out raw routing noise, only show chat relevant info
@@ -92,6 +126,11 @@ def main():
                 
             if user_input.startswith("/quit"):
                 break
+            elif user_input.startswith("/routes"):
+                if last_routes_str:
+                    print(f"\033[95mCurrent Topology: {last_routes_str}\033[0m")
+                else:
+                    print("\033[95mCurrent Topology: No active nodes found.\033[0m")
             elif user_input.startswith("/target"):
                 parts = user_input.split(" ", 1)
                 if len(parts) > 1:
