@@ -65,7 +65,7 @@ struct DataMsg {
     uint8_t next_hop[6]; // Designated relay node
     uint8_t visited_count;
     uint8_t visited[10][6]; // Prevent loops, track path (max 10 hops)
-    char payload[64]; // Text message
+    char payload[128]; // Text message
 };
 
 #pragma pack(pop)
@@ -305,10 +305,10 @@ void loop() {
                       memcpy(dmsg.next_hop, routing_table[tgtU64].next_hop, 6);
                       dmsg.visited_count = 1;
                       memcpy(dmsg.visited[0], myMac, 6);
-                      strncpy(dmsg.payload, text.c_str(), 63);
-                      dmsg.payload[63] = 0; // null terminate
+                      strncpy(dmsg.payload, text.c_str(), 127);
+                      dmsg.payload[127] = 0; // null terminate
                       
-                      esp_now_send(broadcastAddress, (uint8_t*)&dmsg, sizeof(DataMsg));
+                      enqueueMsg(dmsg);
                       Serial.printf("[SND] Blue Ping dispatched! ID: %u\n", dmsg.msg_id);
                   } else {
                       Serial.println("[ERR] Target MAC not in routing table! Unreachable.");
