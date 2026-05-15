@@ -199,6 +199,14 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
+  
+  // --- TX POWER CONFIGURATION ---
+  // Lower the power to artificially shrink the range so you can test mesh routing on a single desk!
+  // Max power: WIFI_POWER_19_5dBm (default, ~100+ meters)
+  // Min power: WIFI_POWER_MINUS_1dBm (very weak, ~1-2 meters)
+  WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
+  // ------------------------------
+  
   esp_read_mac(myMac, ESP_MAC_WIFI_STA);
   
   if (esp_now_init() != ESP_OK) {
@@ -248,12 +256,13 @@ void loop() {
       String input = Serial.readStringUntil('\n');
       input.trim();
       if (input.startsWith("SEND ")) {
-          uint8_t tgt[6];
-          int parsed = sscanf(input.c_str(), "SEND %hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
-                &tgt[0], &tgt[1], &tgt[2], &tgt[3], &tgt[4], &tgt[5]);
+          unsigned int t[6];
+          int parsed = sscanf(input.c_str(), "SEND %x:%x:%x:%x:%x:%x", 
+                &t[0], &t[1], &t[2], &t[3], &t[4], &t[5]);
                 
           if (parsed == 6) {
-              int txtIdx = input.indexOf(' ', 23); // Find space after MAC
+              uint8_t tgt[6] = {(uint8_t)t[0], (uint8_t)t[1], (uint8_t)t[2], (uint8_t)t[3], (uint8_t)t[4], (uint8_t)t[5]};
+              int txtIdx = input.indexOf(' ', 6); // Find space after MAC
               if (txtIdx > 0) {
                   String text = input.substring(txtIdx + 1);
                   uint64_t tgtU64 = macToU64(tgt);

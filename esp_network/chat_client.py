@@ -127,8 +127,11 @@ def main():
             if user_input.startswith("/quit"):
                 break
             elif user_input.startswith("/routes"):
-                if last_routes_str:
-                    print(f"\033[95mCurrent Topology: {last_routes_str}\033[0m")
+                if current_routes:
+                    print("\n\033[95m--- Current Routing Table ---\033[0m")
+                    for mac, hops in current_routes:
+                        print(f"\033[95mNode {mac}  ->  Distance: {hops} hops\033[0m")
+                    print("\033[95m-----------------------------\033[0m\n")
                 else:
                     print("\033[95mCurrent Topology: No active nodes found.\033[0m")
             elif user_input.startswith("/target"):
