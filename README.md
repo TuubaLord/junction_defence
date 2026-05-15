@@ -2,12 +2,9 @@
 MoM team
 
 
+# to run chat client
+>pipenv run python esp_network/chat_client.py
 
-Reliability and resilience of the mesh network under spoofing and jamming
+# to run simulation of mesh network
+>pipenv run python mesh_network/network_sim.py
 
-
-(34%)
-Efficient use of the limited radio bandwidth
-(33%)
-Innovative and creative applications of tactical mesh networking
-(33%)
