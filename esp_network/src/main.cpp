@@ -3,35 +3,6 @@
 #include <esp_now.h>
 #include <map>
 
-// --- Thread-Safe Queue for Relaying ---
-#define MSG_QUEUE_SIZE 10
-DataMsg relay_queue[MSG_QUEUE_SIZE];
-volatile int queue_head = 0;
-volatile int queue_tail = 0;
-portMUX_TYPE queueMutex = portMUX_INITIALIZER_UNLOCKED;
-
-void enqueueMsg(const DataMsg& m) {
-    portENTER_CRITICAL(&queueMutex);
-    int next = (queue_head + 1) % MSG_QUEUE_SIZE;
-    if (next != queue_tail) { // If not full
-        memcpy(&relay_queue[queue_head], &m, sizeof(DataMsg));
-        queue_head = next;
-    }
-    portEXIT_CRITICAL(&queueMutex);
-}
-
-bool dequeueMsg(DataMsg& m) {
-    bool has_msg = false;
-    portENTER_CRITICAL(&queueMutex);
-    if (queue_head != queue_tail) {
-        memcpy(&m, &relay_queue[queue_tail], sizeof(DataMsg));
-        queue_tail = (queue_tail + 1) % MSG_QUEUE_SIZE;
-        has_msg = true;
-    }
-    portEXIT_CRITICAL(&queueMutex);
-    return has_msg;
-}
-
 // --- Configuration ---
 const unsigned long ROUTING_BCAST_INTERVAL = 2000; // ms
 
@@ -69,6 +40,35 @@ struct DataMsg {
 };
 
 #pragma pack(pop)
+
+// --- Thread-Safe Queue for Relaying ---
+#define MSG_QUEUE_SIZE 10
+DataMsg relay_queue[MSG_QUEUE_SIZE];
+volatile int queue_head = 0;
+volatile int queue_tail = 0;
+portMUX_TYPE queueMutex = portMUX_INITIALIZER_UNLOCKED;
+
+void enqueueMsg(const DataMsg& m) {
+    portENTER_CRITICAL(&queueMutex);
+    int next = (queue_head + 1) % MSG_QUEUE_SIZE;
+    if (next != queue_tail) { // If not full
+        memcpy(&relay_queue[queue_head], &m, sizeof(DataMsg));
+        queue_head = next;
+    }
+    portEXIT_CRITICAL(&queueMutex);
+}
+
+bool dequeueMsg(DataMsg& m) {
+    bool has_msg = false;
+    portENTER_CRITICAL(&queueMutex);
+    if (queue_head != queue_tail) {
+        memcpy(&m, &relay_queue[queue_tail], sizeof(DataMsg));
+        queue_tail = (queue_tail + 1) % MSG_QUEUE_SIZE;
+        has_msg = true;
+    }
+    portEXIT_CRITICAL(&queueMutex);
+    return has_msg;
+}
 
 // --- Global State ---
 struct RouteInfo {
