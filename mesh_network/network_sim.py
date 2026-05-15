@@ -11,31 +11,21 @@ class Node:
         self.is_disabled = False
         
         # Distance Vector Routing Table
-        # Map of master_node_id -> { 'distance': float, 'next_hop': Node }
+        # Map of master_node_id -> { 'distance': float, 'hops': int, 'next_hop': Node }
         self.routing_table = {}
         if self.is_master:
-            self.routing_table[self.id] = {'distance': 0.0, 'next_hop': self}
+            self.routing_table[self.id] = {'distance': 0.0, 'hops': 0, 'next_hop': self}
             
         self.neighbors = [] # All nodes within ping range
         self.last_ping_time = -100
         self.ping_interval = 10.0
         self.check_interval = 2.0
         self.last_check_time = -100
-        self.ping_speed = 15.0
+        self.ping_speed = 5.0
         self.max_ping_radius = 15.0
 
     def distance_to(self, other_node):
         return math.hypot(self.x - other_node.x, self.y - other_node.y)
-
-class Message:
-    def __init__(self, sender_master, target_master, start_node, next_node):
-        self.sender = sender_master
-        self.target = target_master
-        self.current_node = start_node
-        self.next_node = next_node
-        self.progress = 0.0 # Distance traveled from current_node towards next_node
-        self.speed = 3.0 # physical travel speed units/sec
-        self.edge_length = start_node.distance_to(next_node) if next_node else 0
 
 class NetworkSim:
     def __init__(self, node_locations_file, master_locations_file):
@@ -43,8 +33,9 @@ class NetworkSim:
         self.masters = []
         self.current_time = 0.0
         self.pings = []
-        self.messages = []
+        self.active_transmissions = {} # msg_id -> {'start_time', 'timeout', 'target'}
         self.last_message_spawn_time = 0.0
+        self.message_spawn_interval = 10.0 # <-- Edit this value (in seconds) to change how often Master 0 sends messages
         
         self.load_nodes(node_locations_file, is_master=False)
         self.load_nodes(master_locations_file, is_master=True)
@@ -60,7 +51,7 @@ class NetworkSim:
                         x = float(parts[0])
                         y = float(parts[1])
                         init_time = float(parts[2])
-                        nid = f"M_{len(self.masters)}" if is_master else f"N_{len(self.nodes)}"
+                        nid = f"{len(self.masters)}" if is_master else f"N_{len(self.nodes)}"
                         node = Node(nid, x, y, init_time, is_master)
                         self.nodes.append(node)
                         if is_master:
@@ -112,54 +103,38 @@ class NetworkSim:
         self.pings = active_pings
 
         # 4. Spawning Messages from Masters
-        if self.current_time - self.last_message_spawn_time >= 2.0:
+        if self.current_time - self.last_message_spawn_time >= self.message_spawn_interval:
             self.last_message_spawn_time = self.current_time
             if len(self.masters) >= 2:
-                # Spawn a message from Master 0 -> 1
-                self._spawn_message(self.masters[0], self.masters[1])
-                # Spawn a message from Master 1 -> 0
-                self._spawn_message(self.masters[1], self.masters[0])
-
-        # 5. Move Messages Physically
-        active_messages = []
-        for msg in self.messages:
-            if msg.next_node is None or not msg.next_node.is_active: 
-                continue # Dropped if no route or node died
+                sender = self.masters[0]
+                target = self.masters[1]
                 
-            msg.progress += msg.speed * dt
-            
-            if msg.progress >= msg.edge_length:
-                # Arrived at next_node
-                msg.current_node = msg.next_node
-                if msg.current_node == msg.target:
-                    # Message delivered successfully!
-                    continue
+                # Check if route exists to determine timeout
+                if target.id in sender.routing_table:
+                    hops = sender.routing_table[target.id]['hops']
+                    next_hop_id = sender.routing_table[target.id]['next_hop'].id
+                    timeout = max(1.5, hops * 1.5) # Minimum 1.5s
                     
-                # Look up next hop in routing table
-                target_id = msg.target.id
-                if target_id in msg.current_node.routing_table:
-                    next_hop = msg.current_node.routing_table[target_id]['next_hop']
-                    if next_hop and next_hop.is_active:
-                        msg.next_node = next_hop
-                        msg.edge_length = msg.current_node.distance_to(next_hop)
-                        msg.progress = 0.0
-                        active_messages.append(msg)
-                # Else message is dropped
-            else:
-                active_messages.append(msg)
-                
-        self.messages = active_messages
+                    msg_id = f"msg_{int(self.current_time * 100)}"
+                    self.active_transmissions[msg_id] = {
+                        'start_time': self.current_time,
+                        'timeout': timeout,
+                        'target': target
+                    }
+                    self._emit_ping(sender, 'blue_ping', payload={'msg_id': msg_id, 'target': target.id, 'visited': [sender.id], 'next_hop': next_hop_id})
 
-    def _spawn_message(self, sender, target):
-        if not sender.is_active: return
-        target_id = target.id
-        if target_id in sender.routing_table:
-            next_hop = sender.routing_table[target_id]['next_hop']
-            if next_hop != sender and next_hop is not None:
-                msg = Message(sender, target, sender, next_hop)
-                self.messages.append(msg)
+        # 5. Check for timeouts and retries
+        for msg_id, t_info in list(self.active_transmissions.items()):
+            if self.current_time - t_info['start_time'] > t_info['timeout']:
+                # Timeout occurred, retry
+                self.active_transmissions[msg_id]['start_time'] = self.current_time
+                target_id = t_info['target'].id
+                sender = self.masters[0]
+                if target_id in sender.routing_table:
+                    next_hop_id = sender.routing_table[target_id]['next_hop'].id
+                    self._emit_ping(sender, 'blue_ping', payload={'msg_id': msg_id, 'target': target_id, 'visited': [sender.id], 'next_hop': next_hop_id})
 
-    def _emit_ping(self, sender, ptype, target=None):
+    def _emit_ping(self, sender, ptype, target=None, payload=None):
         if ptype == 'discovery':
             sender.last_ping_time = self.current_time
             
@@ -168,9 +143,10 @@ class NetworkSim:
             'start_time': self.current_time,
             'type': ptype,
             'target': target,
+            'payload': payload,
             'handled_by': set(),
             # Piggyback routing table on the ping
-            'routing_table': {k: v['distance'] for k, v in sender.routing_table.items()}
+            'routing_table': {k: {'distance': v['distance'], 'hops': v['hops']} for k, v in sender.routing_table.items()}
         })
 
     def _handle_ping_collision(self, ping, receiver):
@@ -185,22 +161,76 @@ class NetworkSim:
         # Handle Routing Updates (Distance Vector)
         dist_to_sender = receiver.distance_to(sender)
         
-        for master_id, advertised_dist in ping['routing_table'].items():
-            new_dist = advertised_dist + dist_to_sender
+        for master_id, advertised in ping['routing_table'].items():
+            new_dist = advertised['distance'] + dist_to_sender
+            new_hops = advertised['hops'] + 1
             
             if master_id not in receiver.routing_table:
-                receiver.routing_table[master_id] = {'distance': new_dist, 'next_hop': sender}
+                receiver.routing_table[master_id] = {'distance': new_dist, 'hops': new_hops, 'next_hop': sender}
             else:
                 current_dist = receiver.routing_table[master_id]['distance']
                 if new_dist < current_dist - 0.1: # Small epsilon to prevent loops
-                    receiver.routing_table[master_id] = {'distance': new_dist, 'next_hop': sender}
+                    receiver.routing_table[master_id] = {'distance': new_dist, 'hops': new_hops, 'next_hop': sender}
                 # If path through same next_hop worsened, update it
                 elif receiver.routing_table[master_id]['next_hop'] == sender and abs(new_dist - current_dist) > 0.1:
                     receiver.routing_table[master_id]['distance'] = new_dist
+                    receiver.routing_table[master_id]['hops'] = new_hops
                     
         # Always reply to discovery so the sender can discover us
         if ping['type'] == 'discovery':
             self._emit_ping(receiver, 'reply', target=sender)
+            
+        # Handle Broadcast Routing (Blue/Red Pings)
+        if ping['type'] == 'blue_ping':
+            msg_id = ping['payload']['msg_id']
+            visited = ping['payload'].get('visited', [])
+            expected_next_hop = ping['payload'].get('next_hop')
+            
+            if expected_next_hop is not None and expected_next_hop != receiver.id:
+                return # Only the designated shortest path node should relay this!
+            
+            if receiver.id not in visited:
+                new_visited = visited + [receiver.id]
+                target_id = ping['payload']['target']
+                
+                if receiver.id == target_id:
+                    # Target reached! Send red_ping back to Master 0
+                    if '0' in receiver.routing_table:
+                        next_hop_id = receiver.routing_table['0']['next_hop'].id
+                        self._emit_ping(receiver, 'red_ping', payload={'msg_id': msg_id, 'target': '0', 'visited': [receiver.id], 'next_hop': next_hop_id})
+                else:
+                    # Look up next hop for the target
+                    if target_id in receiver.routing_table:
+                        next_hop_id = receiver.routing_table[target_id]['next_hop'].id
+                        new_payload = dict(ping['payload'])
+                        new_payload['visited'] = new_visited
+                        new_payload['next_hop'] = next_hop_id
+                        self._emit_ping(receiver, 'blue_ping', payload=new_payload)
+                        
+        elif ping['type'] == 'red_ping':
+            msg_id = ping['payload']['msg_id']
+            visited = ping['payload'].get('visited', [])
+            expected_next_hop = ping['payload'].get('next_hop')
+            
+            if expected_next_hop is not None and expected_next_hop != receiver.id:
+                return # Only the designated shortest path node should relay this!
+            
+            if receiver.id not in visited:
+                new_visited = visited + [receiver.id]
+                target_id = ping['payload']['target']
+                
+                if receiver.id == target_id:
+                    # ACK reached Master 0! Remove from active transmissions
+                    if msg_id in self.active_transmissions:
+                        del self.active_transmissions[msg_id]
+                else:
+                    # Look up next hop for Master 0
+                    if target_id in receiver.routing_table:
+                        next_hop_id = receiver.routing_table[target_id]['next_hop'].id
+                        new_payload = dict(ping['payload'])
+                        new_payload['visited'] = new_visited
+                        new_payload['next_hop'] = next_hop_id
+                        self._emit_ping(receiver, 'red_ping', payload=new_payload)
 
     def _check_neighbors(self, node):
         active_neighbors = [n for n in node.neighbors if n.is_active]
