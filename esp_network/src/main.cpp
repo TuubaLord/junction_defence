@@ -284,10 +284,9 @@ void setup() {
   WiFi.mode(WIFI_STA);
   
   // --- TX POWER CONFIGURATION ---
-  // Lower the power to artificially shrink the range so you can test mesh routing on a single desk!
-  // Max power: WIFI_POWER_19_5dBm (default, ~100+ meters)
-  // Min power: WIFI_POWER_MINUS_1dBm (very weak, ~1-2 meters)
-  WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
+  // -1dBm was too weak for reliable mesh communication on some boards.
+  // 8.5dBm provides a good balance of range (~15-20m) for testing.
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
   // ------------------------------
   
   esp_read_mac(myMac, ESP_MAC_WIFI_STA);
@@ -301,6 +300,7 @@ void setup() {
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = 0;  
   peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA; // Explicitly set interface for Arduino v3/ESP-IDF v5
   esp_now_add_peer(&peerInfo);
   
   esp_now_register_recv_cb(OnDataRecv);
@@ -364,7 +364,8 @@ void loop() {
                       enqueueMsg(dmsg);
                       Serial.printf("[SND] Blue Ping dispatched! ID: %u\n", dmsg.msg_id);
                   } else {
-                      Serial.println("[ERR] Target MAC not in routing table! Unreachable.");
+                      Serial.printf("[ERR] Target %02X:%02X:%02X:%02X:%02X:%02X not in routing table!\n", 
+                                    tgt[0], tgt[1], tgt[2], tgt[3], tgt[4], tgt[5]);
                   }
               } else {
                   Serial.println("[ERR] Missing message text.");
