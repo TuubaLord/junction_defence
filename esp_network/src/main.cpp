@@ -19,8 +19,7 @@ struct BaseMsg {
 // Routing Table Entry advertised to neighbors
 struct RouteEntry {
     uint8_t target[6];
-    uint8_t next_hop[6]; // Added for Path-Vector full-graph visualization
-    int8_t rssi; // Signal strength
+    uint8_t next_hop[6];
     uint8_t hops;
 };
 
