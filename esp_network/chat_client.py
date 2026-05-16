@@ -29,13 +29,28 @@ active_packets = []
 # Graph State for Visualizer and Multi-Path Retry
 mesh_graph = nx.DiGraph()
 last_seen = {}
+last_seen_edge = {}
 
 def update_graph_state():
     try:
-        # Clean up old packets
+        # Clean up old packets and stale edges
         now = time.time()
         global active_packets
         active_packets = [p for p in active_packets if now - p["start_time"] < 10.0]
+        
+        # Remove stale edges (> 15 seconds)
+        stale_edges = [(u, v) for (u, v), t in last_seen_edge.items() if now - t > 15.0]
+        for u, v in stale_edges:
+            if mesh_graph.has_edge(u, v):
+                mesh_graph.remove_edge(u, v)
+            del last_seen_edge[(u, v)]
+            
+        # Remove isolated ghost nodes from the graph completely if they are dead for > 20s
+        stale_nodes = [n for n, t in last_seen.items() if now - t > 20.0 and mesh_graph.degree(n) == 0]
+        for n in stale_nodes:
+            if mesh_graph.has_node(n):
+                mesh_graph.remove_node(n)
+            del last_seen[n]
         
         edges = list(mesh_graph.edges())
         data = {
@@ -124,11 +139,16 @@ def read_from_port(ser):
                         
                         if sender != target:
                             mesh_graph.add_edge(sender, via)
+                            last_seen_edge[(sender, via)] = time.time()
                             last_seen[sender] = time.time()
                             last_seen[via] = time.time()
-                            if via != target:
-                                mesh_graph.add_edge(via, target)
+                            
+                            # Only add the via -> target edge if we know they are directly connected (hops == 1)
+                            # Since we don't parse hops here yet, we will rely on target's own broadcasts
+                            # to fill in the rest of the graph to prevent wormholes!
+                            if via == target:
                                 last_seen[target] = time.time()
+                                
                         update_graph_state()
                     continue
                     
