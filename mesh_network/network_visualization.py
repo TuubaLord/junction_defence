@@ -16,7 +16,7 @@ def visualize_network(locations_file, masters_file):
     ax.grid(True, linestyle='--', alpha=0.3)
     
     scatter_nodes = ax.scatter([], [], color='blue', marker='o', s=100, zorder=5, label='Nodes')
-    scatter_disabled = ax.scatter([], [], color='black', marker='o', s=100, zorder=5, label='Disabled')
+    scatter_disabled =ax.scatter([], [], color='black', marker='o', s=100, zorder=5, label='Disabled')
     scatter_masters = ax.scatter([], [], color='purple', marker='*', s=300, zorder=6, label='Masters')
     scatter_blue_pkts = ax.scatter([], [], color='blue', marker='o', s=50, edgecolors='white', zorder=7, label='Msg Packets')
     scatter_red_pkts = ax.scatter([], [], color='red', marker='o', s=50, edgecolors='white', zorder=7, label='Ack Packets')

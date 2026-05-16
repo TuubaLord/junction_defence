@@ -7,8 +7,8 @@ name = "pypi"
 pyserial = "*"
 networkx = "*"
 matplotlib = "*"
-
 serial = "*"
+scipy = "*"
 
 [dev-packages]
 
