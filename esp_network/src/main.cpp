@@ -157,6 +157,14 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     
     if (base->type == ROUTING) {
         RoutingMsg* msg = (RoutingMsg*)incomingData;
+        
+        // Protect against old firmware packets or buffer over-reads!
+        int expected_len = sizeof(BaseMsg) + 1 + (msg->num_entries * sizeof(RouteEntry));
+        if (len < expected_len || msg->num_entries > 15) {
+            Serial.println("[ERR] Dropped corrupted or legacy routing packet.");
+            return;
+        }
+        
         uint64_t senderU64 = macToU64(mac);
 
         // Print raw routing data for Python full-graph visualization!
