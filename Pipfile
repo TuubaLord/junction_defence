@@ -8,7 +8,9 @@ pyserial = "*"
 networkx = "*"
 matplotlib = "*"
 
+serial = "*"
+
 [dev-packages]
 
-[requires]
+[requires]  
 python_version = "3.11"

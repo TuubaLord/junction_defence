@@ -10,7 +10,7 @@ def visualize_network(locations_file, masters_file):
     sim = NetworkSim(locations_file, masters_file)
     fig, ax = plt.subplots(figsize=(10, 10))
     fig.patch.set_facecolor('white'); ax.set_facecolor('white')
-    ax.set_title("Mesh Network Routing Simulation & Jammer Mapping")
+    ax.set_title("Mesh Network Routing Large Swarm Simulation (20 Drones)")
     ax.set_xlabel("X"); ax.set_ylabel("Y")
     ax.set_xlim(-5, 35); ax.set_ylim(-5, 35)
     ax.grid(True, linestyle='--', alpha=0.3)
@@ -32,7 +32,7 @@ def visualize_network(locations_file, masters_file):
     G_X, G_Y = np.meshgrid(gx, gy)
     # Use a solid vmin/vmax for consistent glow appearance
     jammer_field_img = ax.imshow(np.zeros((grid_res, grid_res)), extent=[-5, 35, -5, 35], 
-                                 origin='lower', cmap='Reds', alpha=0.4, zorder=1, 
+                                 origin='lower', cmap='Reds', alpha=0.6, zorder=1, 
                                  interpolation='bilinear', vmin=0, vmax=6)
     
     est_beam_lines = [ax.plot([], [], 'g--', alpha=0.5, zorder=2)[0] for _ in range(2)]
@@ -169,4 +169,4 @@ def visualize_network(locations_file, masters_file):
 
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    visualize_network(os.path.join(current_dir, "node_locations.txt"), os.path.join(current_dir, "master_locations.txt"))
+    visualize_network(os.path.join(current_dir, "node_locations_20.txt"), os.path.join(current_dir, "master_locations.txt"))
