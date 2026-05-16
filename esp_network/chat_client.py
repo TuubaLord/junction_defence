@@ -25,6 +25,7 @@ ack_received = threading.Event()
 is_sending_file = False
 local_mac = None
 active_packets = []
+global_target_mac = None
 
 # Graph State for Visualizer and Multi-Path Retry
 mesh_graph = nx.DiGraph()
@@ -52,11 +53,13 @@ def update_graph_state():
                 mesh_graph.remove_node(n)
             del last_seen[n]
         
-        edges = list(mesh_graph.edges())
+        edges = [(u, v, mesh_graph.edges[u, v].get("weight", -50)) for u, v in mesh_graph.edges()]
         data = {
             "edges": edges,
             "last_seen": last_seen,
-            "packets": active_packets
+            "packets": active_packets,
+            "local_mac": local_mac,
+            "target_mac": global_target_mac
         }
         with open("graph_state.json", "w") as f:
             json.dump(data, f)
@@ -65,7 +68,23 @@ def update_graph_state():
 
 def add_visual_packet(target, is_ack=False, custom_relay=None):
     global active_packets, local_mac
-    if not local_mac: return
+    
+    # If we connected to an already-running ESP32, we missed the boot MAC print!
+    # We can mathematically infer our local Master MAC: it's the node in the graph 
+    # that is NOT in the routing table, but has outgoing edges to all 1-hop neighbors!
+    if not local_mac:
+        route_macs = [m for m, h in current_routes]
+        one_hop_macs = [m for m, h in current_routes if str(h) == '1']
+        candidates = [n for n in mesh_graph.nodes() if n not in route_macs]
+        for c in candidates:
+            if len(one_hop_macs) > 0 and all(mesh_graph.has_edge(c, oh) for oh in one_hop_macs):
+                local_mac = c
+                print(f"\n\033[96m[SYSTEM] Auto-detected Local Master MAC: {local_mac}\033[0m")
+                break
+                
+    if not local_mac: 
+        return
+        
     try:
         if is_ack:
             path = nx.shortest_path(mesh_graph, source=target, target=local_mac)
@@ -137,8 +156,15 @@ def read_from_port(ser):
                         target = parts[3]
                         via = parts[5]
                         
+                        rssi = -50
+                        if len(parts) >= 8 and parts[6] == "RSSI":
+                            try:
+                                rssi = int(parts[7])
+                            except ValueError:
+                                pass
+                        
                         if sender != target:
-                            mesh_graph.add_edge(sender, via)
+                            mesh_graph.add_edge(sender, via, weight=rssi)
                             last_seen_edge[(sender, via)] = time.time()
                             last_seen[sender] = time.time()
                             last_seen[via] = time.time()
@@ -316,6 +342,8 @@ def main():
                 parts = user_input.split(" ", 1)
                 if len(parts) > 1:
                     target_mac = parts[1].strip().upper()
+                    global_target_mac = target_mac
+                    update_graph_state()
                     print(f"Target MAC locked to: \033[93m{target_mac}\033[0m")
                 else:
                     print("Usage: /target AA:BB:CC:DD:EE:FF")

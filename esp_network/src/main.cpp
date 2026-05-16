@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_arduino_version.h>
 #include <map>
 
 // --- Configuration ---
@@ -19,6 +20,7 @@ struct BaseMsg {
 struct RouteEntry {
     uint8_t target[6];
     uint8_t next_hop[6]; // Added for Path-Vector full-graph visualization
+    int8_t rssi; // Signal strength
     uint8_t hops;
 };
 
@@ -75,6 +77,7 @@ bool dequeueMsg(DataMsg& m) {
 struct RouteInfo {
     uint8_t hops;
     uint8_t next_hop[6];
+    int8_t rssi;
     unsigned long last_updated;
 };
 
@@ -129,6 +132,7 @@ void broadcastRoutingTable() {
             if (msg.num_entries < 15) {
                 u64ToMac(it->first, msg.entries[msg.num_entries].target);
                 memcpy(msg.entries[msg.num_entries].next_hop, it->second.next_hop, 6);
+                msg.entries[msg.num_entries].rssi = it->second.rssi;
                 msg.entries[msg.num_entries].hops = it->second.hops;
                 msg.num_entries++;
             }
@@ -138,12 +142,13 @@ void broadcastRoutingTable() {
     
     // Print our own edges so Python visualizer knows our local Master MAC!
     for (int i = 0; i < msg.num_entries; i++) {
-        Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X\n",
+        Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X RSSI %d\n",
             myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5], // Sender (Us)
             msg.entries[i].target[0], msg.entries[i].target[1], msg.entries[i].target[2], 
             msg.entries[i].target[3], msg.entries[i].target[4], msg.entries[i].target[5], // Target
             msg.entries[i].next_hop[0], msg.entries[i].next_hop[1], msg.entries[i].next_hop[2],
-            msg.entries[i].next_hop[3], msg.entries[i].next_hop[4], msg.entries[i].next_hop[5]); // Next Hop
+            msg.entries[i].next_hop[3], msg.entries[i].next_hop[4], msg.entries[i].next_hop[5], // Next Hop
+            msg.entries[i].rssi); // RSSI
     }
     
     if (msg.num_entries > 0) {
@@ -151,7 +156,14 @@ void broadcastRoutingTable() {
     }
 }
 
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+void OnDataRecv(const esp_now_recv_info_t * esp_now_info, const uint8_t *incomingData, int len) {
+    const uint8_t * mac = esp_now_info->src_addr;
+    int8_t packet_rssi = esp_now_info->rx_ctrl->rssi;
+#else
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+    int8_t packet_rssi = -50; // Fallback
+#endif
     if (len < sizeof(BaseMsg)) return;
     BaseMsg* base = (BaseMsg*)incomingData;
     
@@ -169,12 +181,13 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 
         // Print raw routing data for Python full-graph visualization!
         for (int i = 0; i < msg->num_entries; i++) {
-            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X\n",
+            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X RSSI %d\n",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], // Sender
                 msg->entries[i].target[0], msg->entries[i].target[1], msg->entries[i].target[2], 
                 msg->entries[i].target[3], msg->entries[i].target[4], msg->entries[i].target[5], // Target
                 msg->entries[i].next_hop[0], msg->entries[i].next_hop[1], msg->entries[i].next_hop[2],
-                msg->entries[i].next_hop[3], msg->entries[i].next_hop[4], msg->entries[i].next_hop[5]); // Next Hop
+                msg->entries[i].next_hop[3], msg->entries[i].next_hop[4], msg->entries[i].next_hop[5], // Next Hop
+                msg->entries[i].rssi); // RSSI
         }
         
         // Sender is distance 1 from us
@@ -182,10 +195,12 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             RouteInfo ri;
             ri.hops = 1;
             memcpy(ri.next_hop, mac, 6);
+            ri.rssi = packet_rssi;
             ri.last_updated = millis();
             routing_table[senderU64] = ri;
         } else {
             routing_table[senderU64].last_updated = millis();
+            routing_table[senderU64].rssi = (routing_table[senderU64].rssi * 3 + packet_rssi) / 4;
         }
         
         for (int i=0; i<msg->num_entries; i++) {
@@ -198,6 +213,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                 RouteInfo ri;
                 ri.hops = proposedHops;
                 memcpy(ri.next_hop, mac, 6);
+                ri.rssi = msg->entries[i].rssi;
                 ri.last_updated = millis();
                 routing_table[targetU64] = ri;
             } else {
@@ -205,10 +221,12 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                 if (proposedHops < current.hops) {
                     current.hops = proposedHops;
                     memcpy(current.next_hop, mac, 6);
+                    current.rssi = msg->entries[i].rssi;
                     current.last_updated = millis();
                 } else if (memcmp(current.next_hop, mac, 6) == 0) {
                     // Update hops if our current path changed length
                     current.hops = proposedHops;
+                    current.rssi = msg->entries[i].rssi;
                     current.last_updated = millis();
                 }
             }

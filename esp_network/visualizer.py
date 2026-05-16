@@ -33,9 +33,20 @@ def update(frame):
     G = nx.DiGraph()
     now = time.time()
     
+    local_mac = data.get("local_mac")
+    target_mac = data.get("target_mac")
+    
     for edge in data.get("edges", []):
-        G.add_edge(edge[0], edge[1])
-        
+        if len(edge) == 3:
+            rssi = edge[2]
+            # Convert RSSI to edge tension weight
+            # -30 dBm (strong) -> high tension
+            # -90 dBm (weak) -> low tension
+            weight = max(0.1, (rssi + 100) / 10.0)
+            G.add_edge(edge[0], edge[1], weight=weight)
+        else:
+            G.add_edge(edge[0], edge[1], weight=1.0)
+            
     nodes = list(G.nodes())
     node_colors = []
     
@@ -43,11 +54,24 @@ def update(frame):
         last_seen = data.get("last_seen", {}).get(n, 0)
         if now - last_seen > 5.0:
             node_colors.append("#333333") # Ghost node (Black/Dark Gray)
+        elif n == local_mac:
+            node_colors.append("#00ff66") # Master (Green)
+        elif n == target_mac:
+            node_colors.append("#ff3366") # Target (Red)
         else:
             node_colors.append("#00aaff") # Active node (Blue)
             
     if len(nodes) > 0:
-        new_pos = nx.spring_layout(G, seed=42)
+        fixed_nodes = []
+        fixed_pos = None
+        if local_mac in G.nodes():
+            fixed_nodes = [local_mac]
+            fixed_pos = {local_mac: (0.0, 0.0)}
+            
+        try:
+            new_pos = nx.spring_layout(G, seed=42, weight='weight', pos=fixed_pos, fixed=fixed_nodes if fixed_nodes else None)
+        except ValueError:
+            new_pos = nx.spring_layout(G, seed=42, weight='weight')
         
         # Smooth organic interpolation
         for n in G.nodes():
