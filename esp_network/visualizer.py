@@ -36,27 +36,25 @@ def update(frame):
     local_mac = data.get("local_mac")
     target_mac = data.get("target_mac")
     
+    # Consolidate bidirectional edges by averaging their weights for a more stable map
+    edge_data = {}
     for edge in data.get("edges", []):
-        if len(edge) == 3:
-            rssi = edge[2]
-            
-            # Handle unsigned byte wrap-around and uninitialized/garbage values
-            if rssi > 0:
-                rssi = rssi - 256
-                
-            # RSSI Clamping for logical mapping
-            # Strong signal: -30 -> High weight
-            # Weak signal: -90 -> Low weight
-            rssi_val = max(-100, min(-20, rssi))
-            
-            # Non-linear distance mapping to make the visual change more obvious
-            # We map -30 dBm to a high-tension spring and -90 to a very loose one.
-            # dist_factor goes from ~1.0 (strong) to ~10.0 (weak)
-            dist_factor = (abs(rssi_val) / 30.0) ** 2 
-            weight = 10.0 / dist_factor
-            G.add_edge(edge[0], edge[1], weight=weight)
-        else:
-            G.add_edge(edge[0], edge[1], weight=1.0)
+        if len(edge) < 2: continue
+        u, v = sorted([edge[0], edge[1]])
+        key = (u, v)
+        
+        rssi = edge[2] if len(edge) == 3 else -50
+        if rssi > 0: rssi -= 256
+        rssi = max(-100, min(-20, rssi))
+        
+        if key not in edge_data:
+            edge_data[key] = []
+        edge_data[key].append(rssi)
+        
+    for (u, v), rssis in edge_data.items():
+        avg_rssi = sum(rssis) / len(rssis)
+        target_distance = (abs(avg_rssi) - 20) / 10.0
+        G.add_edge(u, v, weight=target_distance)
             
     nodes = list(G.nodes())
     node_colors = []
@@ -80,11 +78,14 @@ def update(frame):
             fixed_pos = {local_mac: (0.0, 0.0)}
             
         try:
+            # Kamada-Kawai layout is much better for mapping exact physical distances
+            # We use weight to influence the ideal distance.
+            # In Kamada-Kawai, higher weight usually means shorter distance.
+            new_pos = nx.kamada_kawai_layout(G, weight='weight', pos=fixed_pos)
+        except Exception:
+            # Fallback if the graph is too small or singular
             new_pos = nx.spring_layout(G, seed=42, weight='weight', pos=fixed_pos, fixed=fixed_nodes if fixed_nodes else None)
-        except ValueError:
-            new_pos = nx.spring_layout(G, seed=42, weight='weight')
             
-        import math
         import math
         # Force Master to be fixed at (0,0)
         # To keep "Master in bottom left" without breaking relative geometry,
@@ -139,10 +140,20 @@ def update(frame):
         x_vals = [p[0] for p in global_pos.values()]
         y_vals = [p[1] for p in global_pos.values()]
         if x_vals and y_vals:
-            max_x = max(max(x_vals), 0.5)
-            max_y = max(max(y_vals), 0.5)
-            ax.set_xlim(-0.1, max_x + 0.3)
-            ax.set_ylim(-0.1, max_y + 0.3)
+            # Calculate bounding box with padding
+            pad = 0.5
+            min_x = min(min(x_vals), -0.1) - pad
+            max_x = max(max(x_vals), 0.1) + pad
+            min_y = min(min(y_vals), -0.1) - pad
+            max_y = max(max(y_vals), 0.1) + pad
+            
+            # If the user wants "Master in corner", we adjust limits to start near 0 
+            # ONLY if all nodes are positive. Otherwise we expand to show them.
+            if min(x_vals) >= -0.1: min_x = -0.2
+            if min(y_vals) >= -0.1: min_y = -0.2
+            
+            ax.set_xlim(min_x, max_x)
+            ax.set_ylim(min_y, max_y)
                 
         # --- ANIMATE PACKETS ---
         packet_speed = 1.5 # nodes per second

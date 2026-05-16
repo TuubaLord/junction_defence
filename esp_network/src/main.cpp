@@ -177,8 +177,11 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
         if (len == expected_legacy) entry_size = 13;
         else if (len == expected_modern) entry_size = 14;
         else {
-            Serial.printf("[ERR] Packet len %d mismatch (num: %d). Expected %d or %d. Node: %02X:%02X:%02X:%02X:%02X:%02X\n", 
-                          len, num, expected_modern, expected_legacy, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            Serial.printf("[ERR] Packet len %d mismatch (num: %d). Node: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+                          len, num, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            // Print raw bytes for debugging
+            for(int i=0; i<len; i++) Serial.printf("%02X ", incomingData[i]);
+            Serial.println();
             return;
         }
 
