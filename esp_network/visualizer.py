@@ -39,10 +39,21 @@ def update(frame):
     for edge in data.get("edges", []):
         if len(edge) == 3:
             rssi = edge[2]
-            # Convert RSSI to edge tension weight
-            # -30 dBm (strong) -> high tension
-            # -90 dBm (weak) -> low tension
-            weight = max(0.1, (rssi + 100) / 10.0)
+            
+            # Handle unsigned byte wrap-around and uninitialized/garbage values
+            if rssi > 0:
+                rssi = rssi - 256
+                
+            # RSSI Clamping for logical mapping
+            # Strong signal: -30 -> High weight
+            # Weak signal: -90 -> Low weight
+            rssi_val = max(-100, min(-20, rssi))
+            
+            # Non-linear distance mapping to make the visual change more obvious
+            # We map -30 dBm to a high-tension spring and -90 to a very loose one.
+            # dist_factor goes from ~1.0 (strong) to ~10.0 (weak)
+            dist_factor = (abs(rssi_val) / 30.0) ** 2 
+            weight = 10.0 / dist_factor
             G.add_edge(edge[0], edge[1], weight=weight)
         else:
             G.add_edge(edge[0], edge[1], weight=1.0)
@@ -72,7 +83,30 @@ def update(frame):
             new_pos = nx.spring_layout(G, seed=42, weight='weight', pos=fixed_pos, fixed=fixed_nodes if fixed_nodes else None)
         except ValueError:
             new_pos = nx.spring_layout(G, seed=42, weight='weight')
+            
+        import math
+        import math
+        # Force Master to be fixed at (0,0)
+        # To keep "Master in bottom left" without breaking relative geometry,
+        # we rotate the whole layout so that the "average" node is in the first quadrant.
         
+        # Calculate current average angle
+        avg_angle = 0
+        valid_nodes = 0
+        for n in G.nodes():
+            if n != local_mac:
+                x, y = new_pos[n]
+                avg_angle += math.atan2(y, x)
+                valid_nodes += 1
+        
+        if valid_nodes > 0:
+            shift = (math.pi / 4.0) - (avg_angle / valid_nodes)
+            for n in G.nodes():
+                x, y = new_pos[n]
+                dist = math.sqrt(x*x + y*y)
+                angle = math.atan2(y, x) + shift
+                new_pos[n] = (dist * math.cos(angle), dist * math.sin(angle))
+
         # Smooth organic interpolation
         for n in G.nodes():
             if n not in global_pos:
@@ -95,6 +129,20 @@ def update(frame):
                 edge_color="#555555",
                 width=2,
                 arrowsize=20)
+                
+        # Force axis to turn back on (nx.draw turns it off) and center it on 0,0
+        ax.set_axis_on()
+        ax.tick_params(left=True, bottom=True, labelleft=True, labelbottom=True, colors='gray')
+        ax.grid(True, linestyle='--', alpha=0.2, color='gray')
+        
+        # Scale view to encompass ALL nodes + padding
+        x_vals = [p[0] for p in global_pos.values()]
+        y_vals = [p[1] for p in global_pos.values()]
+        if x_vals and y_vals:
+            max_x = max(max(x_vals), 0.5)
+            max_y = max(max(y_vals), 0.5)
+            ax.set_xlim(-0.1, max_x + 0.3)
+            ax.set_ylim(-0.1, max_y + 0.3)
                 
         # --- ANIMATE PACKETS ---
         packet_speed = 1.5 # nodes per second

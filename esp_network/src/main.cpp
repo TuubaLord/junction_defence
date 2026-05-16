@@ -168,29 +168,23 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     BaseMsg* base = (BaseMsg*)incomingData;
     
     if (base->type == ROUTING) {
-        RoutingMsg* msg = (RoutingMsg*)incomingData;
+        // Detect entry size (Legacy 13-byte or Modern 14-byte)
+        uint8_t num = incomingData[1];
+        int entry_size = 14; // Default to modern
+        int expected_modern = 2 + (num * 14);
+        int expected_legacy = 2 + (num * 13);
         
-        // Protect against old firmware packets or buffer over-reads!
-        int expected_len = sizeof(BaseMsg) + 1 + (msg->num_entries * sizeof(RouteEntry));
-        if (len < expected_len || msg->num_entries > 15) {
-            Serial.println("[ERR] Dropped corrupted or legacy routing packet.");
+        if (len == expected_legacy) entry_size = 13;
+        else if (len == expected_modern) entry_size = 14;
+        else {
+            Serial.printf("[ERR] Packet len %d mismatch (num: %d). Expected %d or %d. Node: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+                          len, num, expected_modern, expected_legacy, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
             return;
         }
-        
-        uint64_t senderU64 = macToU64(mac);
 
-        // Print raw routing data for Python full-graph visualization!
-        for (int i = 0; i < msg->num_entries; i++) {
-            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X RSSI %d\n",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], // Sender
-                msg->entries[i].target[0], msg->entries[i].target[1], msg->entries[i].target[2], 
-                msg->entries[i].target[3], msg->entries[i].target[4], msg->entries[i].target[5], // Target
-                msg->entries[i].next_hop[0], msg->entries[i].next_hop[1], msg->entries[i].next_hop[2],
-                msg->entries[i].next_hop[3], msg->entries[i].next_hop[4], msg->entries[i].next_hop[5], // Next Hop
-                msg->entries[i].rssi); // RSSI
-        }
+        uint64_t senderU64 = macToU64(mac);
         
-        // Sender is distance 1 from us
+        // Sender is distance 1 from us. Update their RSSI directly from the packet radio header.
         if (routing_table.find(senderU64) == routing_table.end() || routing_table[senderU64].hops > 1) {
             RouteInfo ri;
             ri.hops = 1;
@@ -200,20 +194,42 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             routing_table[senderU64] = ri;
         } else {
             routing_table[senderU64].last_updated = millis();
+            // EMA for signal stability
             routing_table[senderU64].rssi = (routing_table[senderU64].rssi * 3 + packet_rssi) / 4;
         }
         
-        for (int i=0; i<msg->num_entries; i++) {
-            uint64_t targetU64 = macToU64(msg->entries[i].target);
-            if (targetU64 == macToU64(myMac)) continue; // ignore paths back to ourselves
+        // Manual parsing to handle different entry sizes
+        for (int i = 0; i < num; i++) {
+            const uint8_t* entry_ptr = incomingData + 2 + (i * entry_size);
+            uint8_t target[6];
+            uint8_t next_hop[6];
+            int8_t rssi = -50;
+            uint8_t hops;
             
-            uint8_t proposedHops = msg->entries[i].hops + 1;
+            memcpy(target, entry_ptr, 6);
+            memcpy(next_hop, entry_ptr + 6, 6);
+            if (entry_size == 14) {
+                rssi = (int8_t)entry_ptr[12];
+                hops = entry_ptr[13];
+            } else {
+                hops = entry_ptr[12];
+            }
+
+            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X RSSI %d\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                target[0], target[1], target[2], target[3], target[4], target[5],
+                next_hop[0], next_hop[1], next_hop[2], next_hop[3], next_hop[4], next_hop[5],
+                rssi);
             
+            uint64_t targetU64 = macToU64(target);
+            if (targetU64 == macToU64(myMac)) continue;
+
+            uint8_t proposedHops = hops + 1;
             if (routing_table.find(targetU64) == routing_table.end()) {
                 RouteInfo ri;
                 ri.hops = proposedHops;
                 memcpy(ri.next_hop, mac, 6);
-                ri.rssi = msg->entries[i].rssi;
+                ri.rssi = rssi;
                 ri.last_updated = millis();
                 routing_table[targetU64] = ri;
             } else {
@@ -221,12 +237,11 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                 if (proposedHops < current.hops) {
                     current.hops = proposedHops;
                     memcpy(current.next_hop, mac, 6);
-                    current.rssi = msg->entries[i].rssi;
+                    current.rssi = rssi;
                     current.last_updated = millis();
                 } else if (memcmp(current.next_hop, mac, 6) == 0) {
-                    // Update hops if our current path changed length
                     current.hops = proposedHops;
-                    current.rssi = msg->entries[i].rssi;
+                    current.rssi = rssi;
                     current.last_updated = millis();
                 }
             }

@@ -149,13 +149,11 @@ def read_from_port(ser):
                         current_routes.append((parts[1], parts[2]))
                     continue
                 elif line.startswith("[GRAPH] "):
-                    # [GRAPH] SENDER -> TARGET VIA NEXT_HOP
                     parts = line.split(" ")
                     if len(parts) >= 6:
                         sender = parts[1]
                         target = parts[3]
                         via = parts[5]
-                        
                         rssi = -50
                         if len(parts) >= 8 and parts[6] == "RSSI":
                             try:
@@ -164,14 +162,13 @@ def read_from_port(ser):
                                 pass
                         
                         if sender != target:
+                            if local_mac is None:
+                                local_mac = sender
                             mesh_graph.add_edge(sender, via, weight=rssi)
                             last_seen_edge[(sender, via)] = time.time()
                             last_seen[sender] = time.time()
                             last_seen[via] = time.time()
                             
-                            # Only add the via -> target edge if we know they are directly connected (hops == 1)
-                            # Since we don't parse hops here yet, we will rely on target's own broadcasts
-                            # to fill in the rest of the graph to prevent wormholes!
                             if via == target:
                                 last_seen[target] = time.time()
                                 
@@ -316,6 +313,7 @@ def main():
         print(f"\n\033[93m[WARN] Failed to launch visualizer.py: {e}\033[0m")
     
     target_mac = None
+    global global_target_mac
     print_help()
     
     try:
