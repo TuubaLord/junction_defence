@@ -114,7 +114,6 @@ void broadcastRoutingTable() {
         if (it->second.hops > 0 && (now - it->second.last_updated > 10000)) { // 10s timeout
             it = routing_table.erase(it);
         } else {
-        } else {
             // --- DYNAMICALLY ADD UNICAST PEERS ---
             if (it->second.hops == 1) {
                 uint8_t m[6];
