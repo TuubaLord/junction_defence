@@ -148,7 +148,10 @@ void broadcastRoutingTable() {
     }
     
     if (msg.num_entries > 0) {
-        esp_now_send(broadcastAddress, (uint8_t*)&msg, sizeof(BaseMsg) + 1 + (msg.num_entries * sizeof(RouteEntry)));
+        esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&msg, 2 + (msg.num_entries * 13));
+        if (result != ESP_OK) {
+            Serial.printf("[ERR] Broadcast send failed: %d\n", result);
+        }
     }
 }
 
@@ -158,6 +161,9 @@ void OnDataRecv(const esp_now_recv_info_t * esp_now_info, const uint8_t *incomin
 #else
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 #endif
+    // HEARTBEAT DEBUG: See if we are hearing ANYTHING
+    // Serial.printf("[RX] Packet from %02X:%02X:%02X:%02X:%02X:%02X (len: %d)\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], len);
+
     if (len < sizeof(BaseMsg)) return;
     BaseMsg* base = (BaseMsg*)incomingData;
     
