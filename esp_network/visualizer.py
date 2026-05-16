@@ -36,25 +36,10 @@ def update(frame):
     local_mac = data.get("local_mac")
     target_mac = data.get("target_mac")
     
-    # Consolidate bidirectional edges by averaging their weights for a more stable map
-    edge_data = {}
+    # Add edges with uniform weights
     for edge in data.get("edges", []):
-        if len(edge) < 2: continue
-        u, v = sorted([edge[0], edge[1]])
-        key = (u, v)
-        
-        rssi = edge[2] if len(edge) == 3 else -50
-        if rssi > 0: rssi -= 256
-        rssi = max(-100, min(-20, rssi))
-        
-        if key not in edge_data:
-            edge_data[key] = []
-        edge_data[key].append(rssi)
-        
-    for (u, v), rssis in edge_data.items():
-        avg_rssi = sum(rssis) / len(rssis)
-        target_distance = (abs(avg_rssi) - 20) / 10.0
-        G.add_edge(u, v, weight=target_distance)
+        if len(edge) >= 2:
+            G.add_edge(edge[0], edge[1], weight=1.0)
             
     nodes = list(G.nodes())
     node_colors = []
@@ -78,35 +63,16 @@ def update(frame):
             fixed_pos = {local_mac: (0.0, 0.0)}
             
         try:
-            # Kamada-Kawai layout is much better for mapping exact physical distances
-            # We use weight to influence the ideal distance.
-            # In Kamada-Kawai, higher weight usually means shorter distance.
-            new_pos = nx.kamada_kawai_layout(G, weight='weight', pos=fixed_pos)
+            # Back to standard spring layout with uniform distances
+            new_pos = nx.spring_layout(G, seed=42, k=0.3, pos=fixed_pos, fixed=fixed_nodes if fixed_nodes else None)
         except Exception:
-            # Fallback if the graph is too small or singular
-            new_pos = nx.spring_layout(G, seed=42, weight='weight', pos=fixed_pos, fixed=fixed_nodes if fixed_nodes else None)
+            new_pos = nx.spring_layout(G, seed=42)
             
         import math
-        # Force Master to be fixed at (0,0)
-        # To keep "Master in bottom left" without breaking relative geometry,
-        # we rotate the whole layout so that the "average" node is in the first quadrant.
-        
-        # Calculate current average angle
-        avg_angle = 0
-        valid_nodes = 0
+        # Simple absolute shift to ensure "Master at bottom left"
         for n in G.nodes():
-            if n != local_mac:
-                x, y = new_pos[n]
-                avg_angle += math.atan2(y, x)
-                valid_nodes += 1
-        
-        if valid_nodes > 0:
-            shift = (math.pi / 4.0) - (avg_angle / valid_nodes)
-            for n in G.nodes():
-                x, y = new_pos[n]
-                dist = math.sqrt(x*x + y*y)
-                angle = math.atan2(y, x) + shift
-                new_pos[n] = (dist * math.cos(angle), dist * math.sin(angle))
+            x, y = new_pos[n]
+            new_pos[n] = (abs(x), abs(y))
 
         # Smooth organic interpolation
         for n in G.nodes():

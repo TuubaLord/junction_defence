@@ -154,17 +154,10 @@ def read_from_port(ser):
                         sender = parts[1]
                         target = parts[3]
                         via = parts[5]
-                        rssi = -50
-                        if len(parts) >= 8 and parts[6] == "RSSI":
-                            try:
-                                rssi = int(parts[7])
-                            except ValueError:
-                                pass
-                        
                         if sender != target:
                             if local_mac is None:
                                 local_mac = sender
-                            mesh_graph.add_edge(sender, via, weight=rssi)
+                            mesh_graph.add_edge(sender, via)
                             last_seen_edge[(sender, via)] = time.time()
                             last_seen[sender] = time.time()
                             last_seen[via] = time.time()
