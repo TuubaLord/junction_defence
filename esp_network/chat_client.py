@@ -23,6 +23,8 @@ current_routes = []
 incoming_files = {}
 ack_received = threading.Event()
 is_sending_file = False
+local_mac = None
+active_packets = []
 
 # Graph State for Visualizer and Multi-Path Retry
 mesh_graph = nx.DiGraph()
@@ -30,18 +32,48 @@ last_seen = {}
 
 def update_graph_state():
     try:
+        # Clean up old packets
+        now = time.time()
+        global active_packets
+        active_packets = [p for p in active_packets if now - p["start_time"] < 10.0]
+        
         edges = list(mesh_graph.edges())
         data = {
             "edges": edges,
-            "last_seen": last_seen
+            "last_seen": last_seen,
+            "packets": active_packets
         }
         with open("graph_state.json", "w") as f:
             json.dump(data, f)
     except Exception:
         pass
 
+def add_visual_packet(target, is_ack=False, custom_relay=None):
+    global active_packets, local_mac
+    if not local_mac: return
+    try:
+        if is_ack:
+            path = nx.shortest_path(mesh_graph, source=target, target=local_mac)
+        else:
+            if custom_relay:
+                # Force the path through the custom relay
+                path1 = nx.shortest_path(mesh_graph, source=local_mac, target=custom_relay)
+                path2 = nx.shortest_path(mesh_graph, source=custom_relay, target=target)
+                path = path1[:-1] + path2
+            else:
+                path = nx.shortest_path(mesh_graph, source=local_mac, target=target)
+                
+        active_packets.append({
+            "path": path,
+            "start_time": time.time(),
+            "color": "#ff3366" if is_ack else "#33ffcc"
+        })
+        update_graph_state()
+    except Exception:
+        pass
+
 def read_from_port(ser):
-    global last_routes_str, current_routes, incoming_files, is_sending_file, mesh_graph, last_seen
+    global last_routes_str, current_routes, incoming_files, is_sending_file, mesh_graph, last_seen, local_mac
     in_route_block = False
     
     while True:
@@ -51,6 +83,11 @@ def read_from_port(ser):
                 if not line:
                     continue
                     
+                if line.startswith("ESP Board MAC Address:"):
+                    local_mac = line.split(":")[-6:]
+                    local_mac = ":".join(local_mac).strip()
+                    continue
+
                 # Handle routing table sync block
                 if line == "[ROUTE_START]":
                     in_route_block = True
@@ -165,7 +202,20 @@ def read_from_port(ser):
                     sys.stdout.write("\r\033[K")
                     
                     # Add color to incoming messages for better UX
-                    if line.startswith("[RCV]"):
+                    if line.startswith("[RCV]") and "ACK" in line:
+                        if is_sending_file:
+                            ack_received.set()
+                        
+                        # Visually show the ACK bouncing back to us
+                        try:
+                            # [RCV] 11:22:33:44:55:66: [ACK] ...
+                            sender_mac = line.split("]")[1].split(":")[0].strip()
+                            add_visual_packet(sender_mac, is_ack=True)
+                        except:
+                            pass
+                            
+                        print(f"\033[92m{line}\033[0m")
+                    elif line.startswith("[RCV]"):
                         print(f"\033[92m{line}\033[0m") # Green
                     elif line.startswith("[ACK]"):
                         print(f"\033[94m{line}\033[0m") # Blue
@@ -285,8 +335,10 @@ def main():
                             ack_received.clear()
                             
                             if current_relay is None:
+                                add_visual_packet(target_mac, is_ack=False)
                                 ser.write(f"SEND {target_mac} {payload_str}\n".encode('utf-8'))
                             else:
+                                add_visual_packet(target_mac, is_ack=False, custom_relay=current_relay)
                                 ser.write(f"SEND_VIA {target_mac} {current_relay} {payload_str}\n".encode('utf-8'))
                                 
                             if ack_received.wait(3.0): # Wait 3 seconds for physical RTT ACK
@@ -353,6 +405,9 @@ def main():
                 else:
                     # Format as the ESP32 expects
                     command = f"SEND {target_mac} {user_input}\n"
+                    
+                    add_visual_packet(target_mac, is_ack=False)
+                    
                     ser.write(command.encode('utf-8'))
                     
                     # Print local echo

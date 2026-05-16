@@ -54,6 +54,32 @@ def update(frame):
                 edge_color="#555555",
                 width=2,
                 arrowsize=20)
+                
+        # --- ANIMATE PACKETS ---
+        packet_speed = 1.5 # nodes per second
+        for pkt in data.get("packets", []):
+            path = pkt.get("path", [])
+            total_edges = len(path) - 1
+            if total_edges < 1: continue
+            
+            elapsed = now - pkt.get("start_time", 0)
+            current_progress = elapsed * packet_speed
+            
+            if current_progress < total_edges:
+                edge_idx = int(current_progress)
+                edge_progress = current_progress - edge_idx
+                
+                node_a = path[edge_idx]
+                node_b = path[edge_idx + 1]
+                
+                if node_a in pos and node_b in pos:
+                    pos_a = pos[node_a]
+                    pos_b = pos[node_b]
+                    x = pos_a[0] + (pos_b[0] - pos_a[0]) * edge_progress
+                    y = pos_a[1] + (pos_b[1] - pos_a[1]) * edge_progress
+                    
+                    ax.plot(x, y, marker='o', markersize=15, color=pkt.get("color", "white"), zorder=5, 
+                            markeredgecolor='white', markeredgewidth=2)
 
-ani = animation.FuncAnimation(fig, update, interval=500, cache_frame_data=False)
+ani = animation.FuncAnimation(fig, update, interval=100, cache_frame_data=False)
 plt.show()
