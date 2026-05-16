@@ -213,6 +213,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                 // Send RED_PING ack back to originator
                 if (msg.visited_count > 0) {
                     DataMsg ack;
+                    memset(&ack, 0, sizeof(DataMsg)); // Fully initialize to prevent garbage memory bugs
                     ack.type = RED_PING;
                     ack.msg_id = msg.msg_id;
                     memcpy(ack.target, msg.visited[0], 6); // originator
@@ -339,6 +340,16 @@ void loop() {
   // 3. Process queued transmissions safely in the main loop
   DataMsg queuedMsg;
   if (dequeueMsg(queuedMsg)) {
+      // Just-In-Time Peer Registration
+      if (!esp_now_is_peer_exist(queuedMsg.next_hop)) {
+          esp_now_peer_info_t peer = {};
+          memcpy(peer.peer_addr, queuedMsg.next_hop, 6);
+          peer.channel = 0;
+          peer.encrypt = false;
+          peer.ifidx = WIFI_IF_STA; // Explicitly assign to STA interface
+          esp_now_add_peer(&peer);
+      }
+      
       // Send directly to next_hop via UNICAST! This forces the ESP32 Wi-Fi hardware to automatically retry!
       esp_now_send(queuedMsg.next_hop, (uint8_t*)&queuedMsg, sizeof(DataMsg));
       delay(5); // Give WiFi hardware a tiny bit of breathing room
