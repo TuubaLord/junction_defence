@@ -107,15 +107,29 @@ void broadcastRoutingTable() {
     msg.type = ROUTING;
     msg.num_entries = 0;
     
+    // Clean up stale routes and register 1-hop neighbors as Unicast peers!
     unsigned long now = millis();
-    for (auto it = routing_table.begin(); it != routing_table.end() && msg.num_entries < 30;) {
-        // Purge dead routes (timeout > 10s)
-        if (now - it->second.last_updated > 10000 && it->second.hops > 0) {
+    for (auto it = routing_table.begin(); it != routing_table.end();) {
+        if (it->second.hops > 0 && (now - it->second.last_updated > 10000)) { // 10s timeout
             it = routing_table.erase(it);
         } else {
-            u64ToMac(it->first, msg.entries[msg.num_entries].target);
-            msg.entries[msg.num_entries].hops = it->second.hops;
-            msg.num_entries++;
+            // --- DYNAMICALLY ADD UNICAST PEERS ---
+            if (it->second.hops == 1) {
+                uint8_t m[6];
+                u64ToMac(it->first, m);
+                if (!esp_now_is_peer_exist(m)) {
+                    esp_now_peer_info_t peer = {};
+                    memcpy(peer.peer_addr, m, 6);
+                    peer.channel = 0;
+                    peer.encrypt = false;
+                    esp_now_add_peer(&peer);
+                }
+            }
+            if (msg.num_entries < 30) {
+                u64ToMac(it->first, msg.entries[msg.num_entries].target);
+                msg.entries[msg.num_entries].hops = it->second.hops;
+                msg.num_entries++;
+            }
             ++it;
         }
     }
@@ -325,7 +339,8 @@ void loop() {
   // 3. Process queued transmissions safely in the main loop
   DataMsg queuedMsg;
   if (dequeueMsg(queuedMsg)) {
-      esp_now_send(broadcastAddress, (uint8_t*)&queuedMsg, sizeof(DataMsg));
+      // Send directly to next_hop via UNICAST! This forces the ESP32 Wi-Fi hardware to automatically retry!
+      esp_now_send(queuedMsg.next_hop, (uint8_t*)&queuedMsg, sizeof(DataMsg));
       delay(5); // Give WiFi hardware a tiny bit of breathing room
   }
 }
