@@ -18,6 +18,7 @@ struct BaseMsg {
 // Routing Table Entry advertised to neighbors
 struct RouteEntry {
     uint8_t target[6];
+    uint8_t next_hop[6]; // Added for Path-Vector full-graph visualization
     uint8_t hops;
 };
 
@@ -25,7 +26,7 @@ struct RouteEntry {
 struct RoutingMsg {
     MsgType type; // ROUTING
     uint8_t num_entries;
-    RouteEntry entries[30]; // Max 30 entries to fit in 250 byte ESP-NOW limit
+    RouteEntry entries[15]; // Max 15 entries to fit in 250 byte ESP-NOW limit
 };
 
 // Message passing (Blue and Red Pings)
@@ -113,6 +114,7 @@ void broadcastRoutingTable() {
         if (it->second.hops > 0 && (now - it->second.last_updated > 10000)) { // 10s timeout
             it = routing_table.erase(it);
         } else {
+        } else {
             // --- DYNAMICALLY ADD UNICAST PEERS ---
             if (it->second.hops == 1) {
                 uint8_t m[6];
@@ -125,13 +127,24 @@ void broadcastRoutingTable() {
                     esp_now_add_peer(&peer);
                 }
             }
-            if (msg.num_entries < 30) {
+            if (msg.num_entries < 15) {
                 u64ToMac(it->first, msg.entries[msg.num_entries].target);
+                memcpy(msg.entries[msg.num_entries].next_hop, it->second.next_hop, 6);
                 msg.entries[msg.num_entries].hops = it->second.hops;
                 msg.num_entries++;
             }
             ++it;
         }
+    }
+    
+    // Print our own edges so Python visualizer knows our local Master MAC!
+    for (int i = 0; i < msg.num_entries; i++) {
+        Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X\n",
+            myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5], // Sender (Us)
+            msg.entries[i].target[0], msg.entries[i].target[1], msg.entries[i].target[2], 
+            msg.entries[i].target[3], msg.entries[i].target[4], msg.entries[i].target[5], // Target
+            msg.entries[i].next_hop[0], msg.entries[i].next_hop[1], msg.entries[i].next_hop[2],
+            msg.entries[i].next_hop[3], msg.entries[i].next_hop[4], msg.entries[i].next_hop[5]); // Next Hop
     }
     
     if (msg.num_entries > 0) {
@@ -146,6 +159,16 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     if (base->type == ROUTING) {
         RoutingMsg* msg = (RoutingMsg*)incomingData;
         uint64_t senderU64 = macToU64(mac);
+
+        // Print raw routing data for Python full-graph visualization!
+        for (int i = 0; i < msg->num_entries; i++) {
+            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], // Sender
+                msg->entries[i].target[0], msg->entries[i].target[1], msg->entries[i].target[2], 
+                msg->entries[i].target[3], msg->entries[i].target[4], msg->entries[i].target[5], // Target
+                msg->entries[i].next_hop[0], msg->entries[i].next_hop[1], msg->entries[i].next_hop[2],
+                msg->entries[i].next_hop[3], msg->entries[i].next_hop[4], msg->entries[i].next_hop[5]); // Next Hop
+        }
         
         // Sender is distance 1 from us
         if (routing_table.find(senderU64) == routing_table.end() || routing_table[senderU64].hops > 1) {
@@ -331,8 +354,40 @@ void loop() {
               } else {
                   Serial.println("[ERR] Missing message text.");
               }
+          } else if (input.startsWith("SEND_VIA ")) {
+              // Format: SEND_VIA TARGET_MAC RELAY_MAC Text...
+              unsigned int t[6], r[6];
+              int parsed = sscanf(input.c_str(), "SEND_VIA %x:%x:%x:%x:%x:%x %x:%x:%x:%x:%x:%x", 
+                    &t[0], &t[1], &t[2], &t[3], &t[4], &t[5],
+                    &r[0], &r[1], &r[2], &r[3], &r[4], &r[5]);
+                    
+              if (parsed == 12) {
+                  uint8_t tgt[6] = {(uint8_t)t[0], (uint8_t)t[1], (uint8_t)t[2], (uint8_t)t[3], (uint8_t)t[4], (uint8_t)t[5]};
+                  uint8_t relay[6] = {(uint8_t)r[0], (uint8_t)r[1], (uint8_t)r[2], (uint8_t)r[3], (uint8_t)r[4], (uint8_t)r[5]};
+                  int txtIdx = input.indexOf(' ', 36); // Space after second MAC
+                  if (txtIdx > 0) {
+                      String text = input.substring(txtIdx + 1);
+                      DataMsg dmsg;
+                      dmsg.type = BLUE_PING;
+                      dmsg.msg_id = millis();
+                      memcpy(dmsg.target, tgt, 6);
+                      memcpy(dmsg.next_hop, relay, 6); // FORCE BACKUP ROUTE
+                      dmsg.visited_count = 1;
+                      memcpy(dmsg.visited[0], myMac, 6);
+                      strncpy(dmsg.payload, text.c_str(), 127);
+                      dmsg.payload[127] = 0;
+                      
+                      enqueueMsg(dmsg);
+                      Serial.printf("[SND] Backup Route Ping dispatched via %02X:%02X:%02X:%02X:%02X:%02X! ID: %u\n", 
+                                    relay[0], relay[1], relay[2], relay[3], relay[4], relay[5], dmsg.msg_id);
+                  } else {
+                      Serial.println("[ERR] Missing message text.");
+                  }
+              } else {
+                  Serial.println("[ERR] Invalid SEND_VIA format.");
+              }
           } else {
-              Serial.println("[ERR] Invalid SEND format. Use: SEND AA:BB:CC:DD:EE:FF Hello World");
+              Serial.println("[ERR] Invalid command format.");
           }
       }
   }

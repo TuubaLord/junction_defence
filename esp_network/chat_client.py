@@ -5,6 +5,9 @@ import sys
 import time
 import os
 import base64
+import json
+import subprocess
+import networkx as nx
 
 def print_help():
     print("\n--- Mesh Chat Commands ---")
@@ -21,8 +24,24 @@ incoming_files = {}
 ack_received = threading.Event()
 is_sending_file = False
 
+# Graph State for Visualizer and Multi-Path Retry
+mesh_graph = nx.DiGraph()
+last_seen = {}
+
+def update_graph_state():
+    try:
+        edges = list(mesh_graph.edges())
+        data = {
+            "edges": edges,
+            "last_seen": last_seen
+        }
+        with open("graph_state.json", "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
 def read_from_port(ser):
-    global last_routes_str, current_routes, incoming_files, is_sending_file
+    global last_routes_str, current_routes, incoming_files, is_sending_file, mesh_graph, last_seen
     in_route_block = False
     
     while True:
@@ -57,6 +76,23 @@ def read_from_port(ser):
                     parts = line.split()
                     if len(parts) == 3:
                         current_routes.append((parts[1], parts[2]))
+                    continue
+                elif line.startswith("[GRAPH] "):
+                    # [GRAPH] SENDER -> TARGET VIA NEXT_HOP
+                    parts = line.split(" ")
+                    if len(parts) >= 6:
+                        sender = parts[1]
+                        target = parts[3]
+                        via = parts[5]
+                        
+                        if sender != target:
+                            mesh_graph.add_edge(sender, via)
+                            last_seen[sender] = time.time()
+                            last_seen[via] = time.time()
+                            if via != target:
+                                mesh_graph.add_edge(via, target)
+                                last_seen[target] = time.time()
+                        update_graph_state()
                     continue
                     
                 # Filter out raw routing noise, only show chat relevant info
@@ -176,6 +212,13 @@ def main():
     thread = threading.Thread(target=read_from_port, args=(ser,), daemon=True)
     thread.start()
     
+    # Launch visualizer
+    try:
+        subprocess.Popen([sys.executable, "visualizer.py"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("\n\033[96m[SYSTEM] Live Topology Visualizer launched!\033[0m")
+    except Exception as e:
+        print(f"\n\033[93m[WARN] Failed to launch visualizer.py: {e}\033[0m")
+    
     target_mac = None
     print_help()
     
@@ -236,15 +279,47 @@ def main():
                     
                     def send_reliable(payload_str):
                         retries = 3
+                        current_relay = None # Let ESP32 use default routing first
+                        
                         while retries > 0:
                             ack_received.clear()
-                            ser.write(f"SEND {target_mac} {payload_str}\n".encode('utf-8'))
+                            
+                            if current_relay is None:
+                                ser.write(f"SEND {target_mac} {payload_str}\n".encode('utf-8'))
+                            else:
+                                ser.write(f"SEND_VIA {target_mac} {current_relay} {payload_str}\n".encode('utf-8'))
+                                
                             if ack_received.wait(3.0): # Wait 3 seconds for physical RTT ACK
                                 return True
+                                
                             retries -= 1
                             sys.stdout.write(f"\r\033[K\033[93m[FILE] Chunk timeout. Retrying...\033[0m\n")
                             sys.stdout.write("\033[96m> \033[0m")
                             sys.stdout.flush()
+                            
+                            # --- MULTI-PATH ROUTING RECOVERY ---
+                            # If we failed, let's try to find an alternate route!
+                            immediate_neighbors = [m for m, h in current_routes if int(h) == 1]
+                            best_relay = None
+                            best_path_len = 999
+                            
+                            for neighbor in immediate_neighbors:
+                                if current_relay and neighbor == current_relay:
+                                    continue # Try a different one
+                                try:
+                                    path_len = nx.shortest_path_length(mesh_graph, source=neighbor, target=target_mac)
+                                    if path_len < best_path_len:
+                                        best_path_len = path_len
+                                        best_relay = neighbor
+                                except Exception:
+                                    pass
+                                    
+                            if best_relay:
+                                current_relay = best_relay
+                                sys.stdout.write(f"\r\033[K\033[95m[NET] Rerouting chunk via backup relay {current_relay}...\033[0m\n")
+                                sys.stdout.write("\033[96m> \033[0m")
+                                sys.stdout.flush()
+                                
                         return False
                     
                     # 1. Send start
