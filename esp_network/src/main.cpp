@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
-#include <esp_arduino_version.h>
 #include <map>
 
 // --- Configuration ---
@@ -19,7 +18,7 @@ struct BaseMsg {
 // Routing Table Entry advertised to neighbors
 struct RouteEntry {
     uint8_t target[6];
-    uint8_t next_hop[6];
+    uint8_t next_hop[6]; // Added for Path-Vector full-graph visualization
     uint8_t hops;
 };
 
@@ -148,38 +147,37 @@ void broadcastRoutingTable() {
     }
     
     if (msg.num_entries > 0) {
-        esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&msg, 2 + (msg.num_entries * 13));
-        if (result != ESP_OK) {
-            Serial.printf("[ERR] Broadcast send failed: %d\n", result);
-        }
+        esp_now_send(broadcastAddress, (uint8_t*)&msg, sizeof(BaseMsg) + 1 + (msg.num_entries * sizeof(RouteEntry)));
     }
 }
 
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-void OnDataRecv(const esp_now_recv_info_t * esp_now_info, const uint8_t *incomingData, int len) {
-    const uint8_t * mac = esp_now_info->src_addr;
-#else
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-#endif
-    // HEARTBEAT DEBUG: See if we are hearing ANYTHING
-    // Serial.printf("[RX] Packet from %02X:%02X:%02X:%02X:%02X:%02X (len: %d)\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], len);
-
     if (len < sizeof(BaseMsg)) return;
     BaseMsg* base = (BaseMsg*)incomingData;
     
     if (base->type == ROUTING) {
-        uint8_t num = incomingData[1];
-        int entry_size = 13; 
-        int expected_len = 2 + (num * 13);
+        RoutingMsg* msg = (RoutingMsg*)incomingData;
         
-        if (len < expected_len) {
-            Serial.printf("[ERR] Packet len %d too short for %d entries.\n", len, num);
+        // Protect against old firmware packets or buffer over-reads!
+        int expected_len = sizeof(BaseMsg) + 1 + (msg->num_entries * sizeof(RouteEntry));
+        if (len < expected_len || msg->num_entries > 15) {
+            Serial.println("[ERR] Dropped corrupted or legacy routing packet.");
             return;
         }
-
-        uint64_t senderU64 = macToU64(mac);
         
-        // Sender is distance 1 from us.
+        uint64_t senderU64 = macToU64(mac);
+
+        // Print raw routing data for Python full-graph visualization!
+        for (int i = 0; i < msg->num_entries; i++) {
+            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], // Sender
+                msg->entries[i].target[0], msg->entries[i].target[1], msg->entries[i].target[2], 
+                msg->entries[i].target[3], msg->entries[i].target[4], msg->entries[i].target[5], // Target
+                msg->entries[i].next_hop[0], msg->entries[i].next_hop[1], msg->entries[i].next_hop[2],
+                msg->entries[i].next_hop[3], msg->entries[i].next_hop[4], msg->entries[i].next_hop[5]); // Next Hop
+        }
+        
+        // Sender is distance 1 from us
         if (routing_table.find(senderU64) == routing_table.end() || routing_table[senderU64].hops > 1) {
             RouteInfo ri;
             ri.hops = 1;
@@ -190,25 +188,12 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             routing_table[senderU64].last_updated = millis();
         }
         
-        for (int i = 0; i < num; i++) {
-            const uint8_t* entry_ptr = incomingData + 2 + (i * 13);
-            uint8_t target[6];
-            uint8_t next_hop[6];
-            uint8_t hops;
+        for (int i=0; i<msg->num_entries; i++) {
+            uint64_t targetU64 = macToU64(msg->entries[i].target);
+            if (targetU64 == macToU64(myMac)) continue; // ignore paths back to ourselves
             
-            memcpy(target, entry_ptr, 6);
-            memcpy(next_hop, entry_ptr + 6, 6);
-            hops = entry_ptr[12];
-
-            Serial.printf("[GRAPH] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X VIA %02X:%02X:%02X:%02X:%02X:%02X\n",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                target[0], target[1], target[2], target[3], target[4], target[5],
-                next_hop[0], next_hop[1], next_hop[2], next_hop[3], next_hop[4], next_hop[5]);
+            uint8_t proposedHops = msg->entries[i].hops + 1;
             
-            uint64_t targetU64 = macToU64(target);
-            if (targetU64 == macToU64(myMac)) continue;
-
-            uint8_t proposedHops = hops + 1;
             if (routing_table.find(targetU64) == routing_table.end()) {
                 RouteInfo ri;
                 ri.hops = proposedHops;
@@ -222,6 +207,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                     memcpy(current.next_hop, mac, 6);
                     current.last_updated = millis();
                 } else if (memcmp(current.next_hop, mac, 6) == 0) {
+                    // Update hops if our current path changed length
                     current.hops = proposedHops;
                     current.last_updated = millis();
                 }
@@ -290,9 +276,10 @@ void setup() {
   WiFi.mode(WIFI_STA);
   
   // --- TX POWER CONFIGURATION ---
-  // -1dBm was too weak for reliable mesh communication on some boards.
-  // 8.5dBm provides a good balance of range (~15-20m) for testing.
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  // Lower the power to artificially shrink the range so you can test mesh routing on a single desk!
+  // Max power: WIFI_POWER_19_5dBm (default, ~100+ meters)
+  // Min power: WIFI_POWER_MINUS_1dBm (very weak, ~1-2 meters)
+  WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
   // ------------------------------
   
   esp_read_mac(myMac, ESP_MAC_WIFI_STA);
@@ -306,7 +293,6 @@ void setup() {
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = 0;  
   peerInfo.encrypt = false;
-  peerInfo.ifidx = WIFI_IF_STA; // Explicitly set interface for Arduino v3/ESP-IDF v5
   esp_now_add_peer(&peerInfo);
   
   esp_now_register_recv_cb(OnDataRecv);
@@ -370,8 +356,7 @@ void loop() {
                       enqueueMsg(dmsg);
                       Serial.printf("[SND] Blue Ping dispatched! ID: %u\n", dmsg.msg_id);
                   } else {
-                      Serial.printf("[ERR] Target %02X:%02X:%02X:%02X:%02X:%02X not in routing table!\n", 
-                                    tgt[0], tgt[1], tgt[2], tgt[3], tgt[4], tgt[5]);
+                      Serial.println("[ERR] Target MAC not in routing table! Unreachable.");
                   }
               } else {
                   Serial.println("[ERR] Missing message text.");
